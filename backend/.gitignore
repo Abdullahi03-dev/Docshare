@@ -1,0 +1,13 @@
+# deps
+node_modules/
+dist/
+
+# uploads (local files, don't commit big stuff)
+/uploads/*
+!/uploads/.gitkeep
+
+# env
+.env
+
+# build
+*.tsbuildinfo
