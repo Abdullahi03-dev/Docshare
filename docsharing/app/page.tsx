@@ -221,6 +221,13 @@ export default function Home() {
   const [ttl, setTtl] = useState(30);
   const [burn, setBurn] = useState(false);
 
+  const [emailOpen, setEmailOpen] = useState(false);
+  const [emailTo, setEmailTo] = useState("");
+  const [emailMsg, setEmailMsg] = useState("");
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailSent, setEmailSent] = useState<number | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
+
   const [isDark, setIsDark] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
@@ -352,6 +359,12 @@ export default function Home() {
     setError(null);
     setCopiedLink(false);
     setCopiedCode(false);
+    setEmailOpen(false);
+    setEmailTo("");
+    setEmailMsg("");
+    setEmailSending(false);
+    setEmailSent(null);
+    setEmailError(null);
   }, []);
 
   const killShare = useCallback(async () => {
@@ -390,6 +403,38 @@ export default function Home() {
       setTimeout(() => setCopiedCode(false), 1800);
     }
   }, [share]);
+
+  const emailList = [...new Set(emailTo.split(",").map((s) => s.trim()).filter(Boolean))];
+
+  const sendShareEmail = useCallback(async () => {
+    if (!share || emailSending) return;
+    const to = [...new Set(emailTo.split(",").map((s) => s.trim()).filter(Boolean))];
+    if (to.length === 0) return;
+    setEmailSending(true);
+    setEmailError(null);
+    try {
+      const res = await fetch(`${getApiBase()}/share/${share.code}/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to, message: emailMsg.trim() }),
+      });
+      if (!res.ok) {
+        let msg = "Couldn't send. Try again.";
+        try {
+          const j = await res.json();
+          const m = Array.isArray(j.message) ? j.message[0] : j.message;
+          if (typeof m === "string" && m) msg = m;
+        } catch {}
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      setEmailSent(typeof data.sent === "number" ? data.sent : to.length);
+    } catch (e: unknown) {
+      setEmailError(e instanceof Error ? e.message : "Couldn't send. Try again.");
+    } finally {
+      setEmailSending(false);
+    }
+  }, [share, emailTo, emailMsg, emailSending]);
 
   /* receive */
   const fetchShare = useCallback(async (code: string) => {
@@ -797,6 +842,96 @@ export default function Home() {
                 <p className="mt-2 font-mono text-[11px] text-zinc-400">
                   or share the 4-digit code
                 </p>
+              </div>
+
+              {/* email the link */}
+              <div className="mx-auto mt-6 max-w-xl rounded-xl border border-zinc-200 text-left dark:border-zinc-800">
+                <button
+                  onClick={() => setEmailOpen((o) => !o)}
+                  aria-expanded={emailOpen}
+                  className="flex w-full items-center gap-3 px-5 py-3.5"
+                >
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-zinc-200 text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+                      <rect x="1.5" y="3" width="11" height="8.5" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                      <path d="m2.5 4.5 4.5 3.5 4.5-3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium tracking-[-0.01em]">
+                      Email the link
+                    </span>
+                    <span className="block truncate text-xs text-zinc-500 dark:text-zinc-400">
+                      WeTransfer-style — up to 10 addresses
+                    </span>
+                  </span>
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 14 14"
+                    fill="none"
+                    aria-hidden
+                    className={`shrink-0 text-zinc-400 transition-transform duration-150 ${emailOpen ? "rotate-180" : ""}`}
+                  >
+                    <path d="m3.5 5.5 3.5 3.5 3.5-3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </button>
+                {emailOpen && (
+                  <div className="rise border-t border-zinc-100 px-5 py-4 dark:border-zinc-900">
+                    <label
+                      htmlFor="email-to"
+                      className="font-mono text-[11px] uppercase tracking-[0.18em] text-zinc-400"
+                    >
+                      To — comma separated
+                    </label>
+                    <input
+                      id="email-to"
+                      value={emailTo}
+                      onChange={(e) => setEmailTo(e.target.value)}
+                      placeholder="ama@example.com, ngozi@example.com"
+                      inputMode="email"
+                      className="mt-2 w-full rounded-lg border border-zinc-200 bg-transparent px-3.5 py-2.5 text-sm placeholder:text-zinc-300 focus:border-zinc-950 focus:outline-none dark:border-zinc-800 dark:placeholder:text-zinc-700 dark:focus:border-zinc-100"
+                    />
+                    <label
+                      htmlFor="email-msg"
+                      className="mt-4 block font-mono text-[11px] uppercase tracking-[0.18em] text-zinc-400"
+                    >
+                      Note — optional
+                    </label>
+                    <textarea
+                      id="email-msg"
+                      value={emailMsg}
+                      onChange={(e) => setEmailMsg(e.target.value.slice(0, 500))}
+                      rows={2}
+                      placeholder="Here's the file you asked for…"
+                      className="mt-2 w-full resize-none rounded-lg border border-zinc-200 bg-transparent px-3.5 py-2.5 text-sm placeholder:text-zinc-300 focus:border-zinc-950 focus:outline-none dark:border-zinc-800 dark:placeholder:text-zinc-700 dark:focus:border-zinc-100"
+                    />
+                    <div className="mt-3 flex items-center justify-between gap-3">
+                      <span className="font-mono text-[11px] text-zinc-400">
+                        {emailList.length}/10
+                      </span>
+                      <button
+                        onClick={sendShareEmail}
+                        disabled={emailSending || emailList.length === 0}
+                        className="rounded-lg bg-zinc-950 px-5 py-2 text-sm font-medium text-white transition-all duration-150 hover:opacity-80 active:scale-[0.98] disabled:opacity-30 dark:bg-white dark:text-black"
+                      >
+                        {emailSending ? "Sending…" : emailSent ? "Sent ✓ — send again" : "Send email"}
+                      </button>
+                    </div>
+                    {emailSent !== null && !emailError && (
+                      <p className="mt-3 text-[13px] text-zinc-600 dark:text-zinc-400">
+                        Sent to {emailSent} address{emailSent > 1 ? "es" : ""}. If it doesn't
+                        arrive in a minute, ask them to check spam — first-time senders
+                        often land there.
+                      </p>
+                    )}
+                    {emailError && (
+                      <p className="mt-3 text-[13px] text-zinc-600 dark:text-zinc-400">
+                        {emailError}
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               <ul className="mx-auto mt-8 max-w-xl divide-y divide-zinc-100 border-y border-zinc-100 text-left dark:divide-zinc-900 dark:border-zinc-900">

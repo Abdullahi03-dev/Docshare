@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -19,6 +20,15 @@ import { randomUUID } from 'crypto';
 import * as archiverModule from 'archiver';
 const archiver = (archiverModule as any).default ?? archiverModule;
 import { FilesService, ShareSession } from './files.service';
+import { MailService } from '../mail/mail.service';
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
 
 // Multer: stream straight to disk (fast, low RAM, any file type)
 const storage = diskStorage({
@@ -30,7 +40,10 @@ const storage = diskStorage({
 
 @Controller()
 export class FilesController {
-  constructor(private readonly filesService: FilesService) {}
+  constructor(
+    private readonly filesService: FilesService,
+    private readonly mailService: MailService,
+  ) {}
 
   private parseShareOptions(body: Record<string, unknown> | undefined): {
     burn: boolean;
@@ -104,6 +117,42 @@ export class FilesController {
       })),
       expiresAt: session.expiresAt,
     };
+  }
+
+  // POST /api/share/:code/email -> email the download link (WeTransfer-style)
+  // Body: { to: string[] | "a@x.com, b@y.com", message?: string }
+  @Post('share/:code/email')
+  async emailShare(
+    @Param('code') code: string,
+    @Body() body: { to?: string[] | string; message?: string },
+  ) {
+    const session = this.filesService.getSession(code);
+    if (!session) throw new NotFoundException('Share not found or expired');
+
+    const raw = Array.isArray(body?.to)
+      ? body.to
+      : String(body?.to ?? '').split(',');
+    const to = [...new Set(raw.map((e) => String(e).trim().toLowerCase()).filter(Boolean))].slice(0, 10);
+    if (to.length === 0)
+      throw new BadRequestException('Add at least one email address.');
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    const bad = to.find((e) => e.length > 254 || !EMAIL_RE.test(e));
+    if (bad) throw new BadRequestException(`Invalid email address: ${bad}`);
+
+    const message = String(body?.message ?? '').slice(0, 500);
+    const baseUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+    const totalSize = session.files.reduce((n, f) => n + f.size, 0);
+
+    return this.mailService.sendShareEmail({
+      to,
+      code: session.code,
+      link: `${baseUrl}/r/${session.code}`,
+      fileCount: session.files.length,
+      totalSize: formatBytes(totalSize),
+      expiresAt: session.expiresAt,
+      burn: session.burn,
+      message: message || undefined,
+    });
   }
 
   // GET /api/share/:code/download -> stream back
