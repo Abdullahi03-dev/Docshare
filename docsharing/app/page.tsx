@@ -246,6 +246,22 @@ export default function Home() {
     setLiveHost(h !== "localhost" && h !== "127.0.0.1");
   }, []);
 
+  /* warm the API connection early so the first real request skips DNS+TLS */
+  useEffect(() => {
+    if (!BACKEND_CONFIGURED) return;
+    try {
+      const origin = new URL(getApiBase()).origin;
+      if (origin === window.location.origin) return;
+      const pre = document.createElement("link");
+      pre.rel = "preconnect";
+      pre.href = origin;
+      const dns = document.createElement("link");
+      dns.rel = "dns-prefetch";
+      dns.href = origin;
+      document.head.append(pre, dns);
+    } catch {}
+  }, []);
+
   const toggleTheme = useCallback(() => {
     const el = document.documentElement;
     const next = !el.classList.contains("dark");
@@ -259,6 +275,18 @@ export default function Home() {
   /* health — quiet, footer only */
   useEffect(() => {
     let alive = true;
+    // Live https page with no backend configured: the check can only fail
+    // (mixed-content + nothing listening), so don't even fire it.
+    const h = window.location.hostname;
+    const localHost = h === "localhost" || h === "127.0.0.1";
+    if (
+      !BACKEND_CONFIGURED &&
+      !localHost &&
+      window.location.protocol === "https:"
+    ) {
+      setApiDot("offline");
+      return;
+    }
     (async () => {
       try {
         const res = await fetch(`${getApiBase()}/health`);

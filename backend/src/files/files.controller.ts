@@ -21,6 +21,7 @@ import * as archiverModule from 'archiver';
 const archiver = (archiverModule as any).default ?? archiverModule;
 import { FilesService, ShareSession } from './files.service';
 import { MailService } from '../mail/mail.service';
+import { Throttle } from '@nestjs/throttler';
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';
@@ -62,6 +63,8 @@ export class FilesController {
   }
 
   // POST /api/share  (FormData files[] -> multi-file)
+  // Tight limit: each upload burns disk + RAM on a tiny instance.
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
   @Post('share')
   @UseInterceptors(
     FilesInterceptor('files', 50, {
@@ -121,6 +124,8 @@ export class FilesController {
 
   // POST /api/share/:code/email -> email the download link (WeTransfer-style)
   // Body: { to: string[] | "a@x.com, b@y.com", message?: string }
+  // Strictest limit in the app: this spends real Resend quota per call.
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @Post('share/:code/email')
   async emailShare(
     @Param('code') code: string,

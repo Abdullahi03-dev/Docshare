@@ -139,6 +139,16 @@ export default function DirectPage() {
 
   useEffect(() => {
     setIsDark(document.documentElement.classList.contains("dark"));
+    // warm the signaling origin early — the socket handshake starts sooner
+    try {
+      const origin = new URL(getSocketOrigin()).origin;
+      if (origin !== window.location.origin) {
+        const pre = document.createElement("link");
+        pre.rel = "preconnect";
+        pre.href = origin;
+        document.head.append(pre);
+      }
+    } catch {}
     return () => {
       // full cleanup on unmount
       cancelRef.current = true;
