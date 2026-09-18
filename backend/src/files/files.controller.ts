@@ -4,15 +4,18 @@ import {
   Controller,
   Delete,
   Get,
+  HttpException,
+  HttpStatus,
   NotFoundException,
   Param,
   Post,
+  Req,
   Res,
   UploadedFiles,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { diskStorage } from 'multer';
 import { extname, join } from 'path';
 import { existsSync, createReadStream, statSync } from 'fs';
@@ -60,6 +63,72 @@ export class FilesController {
   private burnOnFinish(code: string, session: ShareSession, res: Response) {
     if (!session.burn) return;
     res.on('finish', () => this.filesService.cleanup(code));
+  }
+
+  // Parse `Range: bytes=start-end` (also `start-` and suffix `-lastN`).
+  // Returns undefined when no Range header, null when unsatisfiable.
+  private parseRange(
+    header: string | undefined,
+    size: number,
+  ): { start: number; end: number } | null | undefined {
+    if (!header) return undefined;
+    const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+    if (!m) return null;
+    let start = m[1] === '' ? NaN : parseInt(m[1], 10);
+    let end = m[2] === '' ? NaN : parseInt(m[2], 10);
+    if (isNaN(start)) {
+      if (isNaN(end) || end <= 0) return null;
+      start = Math.max(0, size - end); // suffix: last N bytes
+      end = size - 1;
+    } else {
+      if (isNaN(end) || end >= size) end = size - 1;
+    }
+    if (start >= size || start > end) return null;
+    return { start, end };
+  }
+
+  // Serve one file with resume support (206 Partial Content).
+  // Ranged (resume) requests never burn a share — only a full 200 does.
+  private streamFile(
+    res: Response,
+    req: Request,
+    full: string,
+    opts: {
+      name: string;
+      mimetype?: string;
+      burn?: { code: string; session: ShareSession };
+    },
+  ) {
+    const size = statSync(full).size;
+    const range = this.parseRange(req.headers.range, size);
+    if (req.headers.range && !range) {
+      res.set({ 'Content-Range': `bytes */${size}` });
+      throw new HttpException(
+        'Requested range not satisfiable',
+        HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE,
+      );
+    }
+    const start = range?.start ?? 0;
+    const end = range?.end ?? size - 1;
+    res.status(range ? 206 : 200);
+    res.set({
+      'Accept-Ranges': 'bytes',
+      'Content-Length': String(end - start + 1),
+      'Content-Type': opts.mimetype || 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${encodeURIComponent(opts.name)}"`,
+      ...(range ? { 'Content-Range': `bytes ${start}-${end}/${size}` } : {}),
+    });
+    if (opts.burn && !range) {
+      this.burnOnFinish(opts.burn.code, opts.burn.session, res);
+    }
+    const stream = createReadStream(full, range ? { start, end } : {});
+    // if client disconnects, destroy stream
+    res.on('close', () => stream.destroy());
+    stream.pipe(res);
+    stream.on('error', () => {
+      if (!res.headersSent) res.status(500).end();
+      else res.destroy();
+    });
   }
 
   // POST /api/share  (FormData files[] -> multi-file)
@@ -163,7 +232,7 @@ export class FilesController {
   // GET /api/share/:code/download -> stream back
   // single file: direct stream; multi-file: zip on-the-fly (no temp file)
   @Get('share/:code/download')
-  download(@Param('code') code: string, @Res() res: Response) {
+  download(@Param('code') code: string, @Res() res: Response, @Req() req: Request) {
     const session = this.filesService.getSession(code);
     if (!session) throw new NotFoundException('Share not found or expired');
     if (session.files.length === 0) throw new NotFoundException('No files in share');
@@ -172,20 +241,10 @@ export class FilesController {
       const f = session.files[0];
       const full = this.filesService.resolvePath(f.storedName);
       if (!existsSync(full)) throw new NotFoundException('File not found on disk');
-      const stat = statSync(full);
-      res.set({
-        'Content-Length': String(stat.size),
-        'Content-Type': f.mimetype || 'application/octet-stream',
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(f.originalName)}"`,
-      });
-      this.burnOnFinish(code, session, res);
-      const stream = createReadStream(full);
-      // if client disconnects, destroy stream
-      res.on('close', () => stream.destroy());
-      stream.pipe(res);
-      stream.on('error', () => {
-        if (!res.headersSent) res.status(500).end();
-        else res.destroy();
+      this.streamFile(res, req, full, {
+        name: f.originalName,
+        mimetype: f.mimetype,
+        burn: { code, session },
       });
       return;
     }
@@ -224,7 +283,7 @@ export class FilesController {
 
   // GET /api/share/:code/download/:index -> download single file from multi-share
   @Get('share/:code/download/:index')
-  downloadOne(@Param('code') code: string, @Param('index') index: string, @Res() res: Response) {
+  downloadOne(@Param('code') code: string, @Param('index') index: string, @Res() res: Response, @Req() req: Request) {
     const session = this.filesService.getSession(code);
     if (!session) throw new NotFoundException('Share not found or expired');
     const idx = parseInt(index, 10);
@@ -233,16 +292,11 @@ export class FilesController {
     const f = session.files[idx];
     const full = this.filesService.resolvePath(f.storedName);
     if (!existsSync(full)) throw new NotFoundException('File not found on disk');
-    const stat = statSync(full);
-    res.set({
-      'Content-Length': String(stat.size),
-      'Content-Type': f.mimetype || 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${encodeURIComponent(f.originalName)}"`,
+    this.streamFile(res, req, full, {
+      name: f.originalName,
+      mimetype: f.mimetype,
+      burn: { code, session },
     });
-    this.burnOnFinish(code, session, res);
-    const stream = createReadStream(full);
-    res.on('close', () => stream.destroy());
-    stream.pipe(res);
   }
 
   // DELETE /api/share/:code -> kill session (fs unlink + Map.delete + abort downloading streams)
@@ -291,17 +345,10 @@ export class FilesController {
   }
 
   @Get('files/:name/download')
-  downloadLegacy(@Param('name') name: string, @Res() res: Response) {
+  downloadLegacy(@Param('name') name: string, @Res() res: Response, @Req() req: Request) {
     const full = this.filesService.resolvePath(name);
     if (!existsSync(full)) throw new NotFoundException('File not found');
-    const stat = statSync(full);
-    res.set({
-      'Content-Length': String(stat.size),
-      'Content-Disposition': `attachment; filename="${name}"`,
-    });
-    const stream = createReadStream(full);
-    res.on('close', () => stream.destroy());
-    stream.pipe(res);
+    this.streamFile(res, req, full, { name });
   }
 
   @Delete('files/:name')

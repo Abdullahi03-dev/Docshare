@@ -16,6 +16,10 @@ const QRCodeSVG = dynamic(
 // panel below are hidden until this is flipped back to true.
 const OFFLINE_MODE_ENABLED = false;
 
+// Feature flag: Direct P2P page exists at /direct but is unlinked from the
+// navbar until this is flipped back to true.
+const SHOW_DIRECT_NAV = false;
+
 const BACKEND_CONFIGURED = !!process.env.NEXT_PUBLIC_API_URL;
 
 function getApiBase() {
@@ -206,6 +210,7 @@ export default function Home() {
   const [pending, setPending] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [upRate, setUpRate] = useState(0); // bytes/sec, live upload speed
   const [share, setShare] = useState<ShareResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState("");
@@ -238,6 +243,7 @@ export default function Home() {
   const [isDark, setIsDark] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
+  const upSpeedRef = useRef({ t: 0, loaded: 0 });
 
   /* theme */
   useEffect(() => {
@@ -340,6 +346,8 @@ export default function Home() {
       setPending(arr);
       setUploading(true);
       setProgress(0);
+      setUpRate(0);
+      upSpeedRef.current = { t: Date.now(), loaded: 0 };
       setError(null);
       setShare(null);
 
@@ -355,6 +363,13 @@ export default function Home() {
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) {
         setProgress(Math.round((e.loaded / e.total) * 100));
+        const now = Date.now();
+        const prev = upSpeedRef.current;
+        const dt = (now - prev.t) / 1000;
+        if (dt >= 0.5 && e.loaded > prev.loaded) {
+          setUpRate(Math.round((e.loaded - prev.loaded) / dt));
+          upSpeedRef.current = { t: now, loaded: e.loaded };
+        }
       }
     };
     xhr.onload = () => {
@@ -391,6 +406,7 @@ export default function Home() {
     setPending([]);
     setUploading(false);
     setProgress(0);
+    setUpRate(0);
     setShare(null);
     setError(null);
     setCopiedLink(false);
@@ -495,6 +511,13 @@ export default function Home() {
 
   const totalBytes = pending.reduce((n, f) => n + f.size, 0);
   const shareTotal = share ? share.files.reduce((n, f) => n + f.size, 0) : 0;
+  let upEta = "";
+  if (uploading && upRate > 0 && progress < 100) {
+    const eta = Math.round((totalBytes * (1 - progress / 100)) / upRate);
+    if (isFinite(eta) && eta > 0) {
+      upEta = eta < 60 ? ` · ~${eta}s left` : ` · ~${Math.floor(eta / 60)}m ${eta % 60}s left`;
+    }
+  }
   const showConfigNotice = !BACKEND_CONFIGURED && liveHost && !noticeOff;
 
   const statusLabel =
@@ -533,12 +556,14 @@ export default function Home() {
           >
             Receive
           </a>
-          <a
-            href="/direct"
-            className="hidden font-mono text-[12px] text-zinc-400 transition-colors duration-150 hover:text-zinc-900 sm:inline dark:hover:text-zinc-100"
-          >
-            Direct
-          </a>
+          {SHOW_DIRECT_NAV && (
+            <a
+              href="/direct"
+              className="hidden font-mono text-[12px] text-zinc-400 transition-colors duration-150 hover:text-zinc-900 sm:inline dark:hover:text-zinc-100"
+            >
+              Direct
+            </a>
+          )}
           <span className="hidden h-4 w-px bg-zinc-200 sm:block dark:bg-zinc-800" />
           <span className="flex items-center gap-1.5 font-mono text-[11px] text-zinc-400">
             <span
@@ -1060,6 +1085,7 @@ export default function Home() {
                   </p>
                   <p className="mt-0.5 font-mono text-[11px] text-zinc-400">
                     {formatBytes(totalBytes)} · {progress}% · uploading
+                    {upRate > 0 ? ` · ${formatBytes(upRate)}/s${upEta}` : ""}
                   </p>
                 </div>
                 <button
