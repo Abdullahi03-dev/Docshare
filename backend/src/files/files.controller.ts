@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -17,7 +18,7 @@ import { existsSync, createReadStream, statSync } from 'fs';
 import { randomUUID } from 'crypto';
 import * as archiverModule from 'archiver';
 const archiver = (archiverModule as any).default ?? archiverModule;
-import { FilesService } from './files.service';
+import { FilesService, ShareSession } from './files.service';
 
 // Multer: stream straight to disk (fast, low RAM, any file type)
 const storage = diskStorage({
@@ -31,6 +32,22 @@ const storage = diskStorage({
 export class FilesController {
   constructor(private readonly filesService: FilesService) {}
 
+  private parseShareOptions(body: Record<string, unknown> | undefined): {
+    burn: boolean;
+    ttlMinutes: number;
+  } {
+    const burn = body?.burn === 'true' || body?.burn === '1';
+    const ttlMinutes = parseInt(String(body?.expiresIn ?? ''), 10);
+    return { burn, ttlMinutes };
+  }
+
+  // Burn-after-reading: delete the whole session once a download completes.
+  // Hooked on `finish` (not `close`) so aborted downloads don't kill the share.
+  private burnOnFinish(code: string, session: ShareSession, res: Response) {
+    if (!session.burn) return;
+    res.on('finish', () => this.filesService.cleanup(code));
+  }
+
   // POST /api/share  (FormData files[] -> multi-file)
   @Post('share')
   @UseInterceptors(
@@ -39,13 +56,21 @@ export class FilesController {
       limits: { fileSize: 1024 * 1024 * 1024 }, // 1GB per file
     }),
   )
-  share(@UploadedFiles() files: Express.Multer.File[]) {
+  share(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body() body: Record<string, unknown>,
+  ) {
     if (!files || files.length === 0) throw new NotFoundException('No files received');
-    const { code, session } = this.filesService.createSession(files);
+    const { code, session } = this.filesService.createSession(
+      files,
+      this.parseShareOptions(body),
+    );
     const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     return {
       code,
       qr: `${baseUrl}/r/${code}`,
+      burn: session.burn,
+      ttlMinutes: session.ttlMinutes,
       files: session.files.map((f) => ({
         originalName: f.originalName,
         storedName: f.storedName,
@@ -69,6 +94,8 @@ export class FilesController {
     if (!session) throw new NotFoundException('Share not found or expired');
     return {
       code: session.code,
+      burn: session.burn,
+      ttlMinutes: session.ttlMinutes,
       files: session.files.map((f) => ({
         originalName: f.originalName,
         storedName: f.storedName,
@@ -97,6 +124,7 @@ export class FilesController {
         'Content-Type': f.mimetype || 'application/octet-stream',
         'Content-Disposition': `attachment; filename="${encodeURIComponent(f.originalName)}"`,
       });
+      this.burnOnFinish(code, session, res);
       const stream = createReadStream(full);
       // if client disconnects, destroy stream
       res.on('close', () => stream.destroy());
@@ -113,6 +141,7 @@ export class FilesController {
       'Content-Type': 'application/zip',
       'Content-Disposition': `attachment; filename="share-${code}.zip"`,
     });
+    this.burnOnFinish(code, session, res);
     const archive = archiver('zip', { zlib: { level: 1 } }); // level 1 = fastest
 
     // kill archive if client disconnects mid-download
@@ -156,6 +185,7 @@ export class FilesController {
       'Content-Type': f.mimetype || 'application/octet-stream',
       'Content-Disposition': `attachment; filename="${encodeURIComponent(f.originalName)}"`,
     });
+    this.burnOnFinish(code, session, res);
     const stream = createReadStream(full);
     res.on('close', () => stream.destroy());
     stream.pipe(res);
@@ -174,10 +204,16 @@ export class FilesController {
   // POST /api/files/upload  (single file, legacy)
   @Post('files/upload')
   @UseInterceptors(FilesInterceptor('files', 1, { storage, limits: { fileSize: 1024 * 1024 * 1024 } }))
-  uploadLegacy(@UploadedFiles() files: Express.Multer.File[]) {
+  uploadLegacy(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body() body: Record<string, unknown>,
+  ) {
     const file = files?.[0];
     if (!file) throw new NotFoundException('No file received');
-    const { code, session } = this.filesService.createSession([file]);
+    const { code, session } = this.filesService.createSession(
+      [file],
+      this.parseShareOptions(body),
+    );
     const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     return {
       id: session.files[0].id,
@@ -189,6 +225,8 @@ export class FilesController {
       uploadedAt: session.files[0].uploadedAt,
       code,
       qr: `${baseUrl}/r/${code}`,
+      burn: session.burn,
+      ttlMinutes: session.ttlMinutes,
       expiresAt: session.expiresAt,
     };
   }

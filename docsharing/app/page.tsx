@@ -5,6 +5,10 @@ import { QRCodeSVG } from "qrcode.react";
 
 /* ---------------------------------- utils --------------------------------- */
 
+// Feature flag: Offline LAN mode is parked for now — the toggle and LAN
+// panel below are hidden until this is flipped back to true.
+const OFFLINE_MODE_ENABLED = false;
+
 const BACKEND_CONFIGURED = !!process.env.NEXT_PUBLIC_API_URL;
 
 function getApiBase() {
@@ -34,12 +38,14 @@ function extOf(name: string) {
   const ext = parts.length > 1 ? parts.pop()!.toUpperCase() : "";
   return ext && ext.length <= 5 ? ext : "FILE";
 }
-
-function formatCountdown(expiresAt: string | null) {  if (!expiresAt) return "";
+function formatCountdown(expiresAt: string | null) {
+  if (!expiresAt) return "";
   const diff = new Date(expiresAt).getTime() - Date.now();
   if (diff <= 0) return "expired";
-  const m = Math.floor(diff / 60000);
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
   const s = Math.floor((diff % 60000) / 1000);
+  if (h > 0) return `${h}h ${m}m`;
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
@@ -74,12 +80,16 @@ type ShareFile = {
 type ShareResponse = {
   code: string;
   qr: string;
+  burn: boolean;
+  ttlMinutes: number;
   files: ShareFile[];
   expiresAt: string;
 };
 
 type ShareMeta = {
   code: string;
+  burn: boolean;
+  ttlMinutes: number;
   files: ShareFile[];
   expiresAt: string;
 };
@@ -208,6 +218,9 @@ export default function Home() {
   const [recvLoading, setRecvLoading] = useState(false);
   const [recvError, setRecvError] = useState<string | null>(null);
 
+  const [ttl, setTtl] = useState(30);
+  const [burn, setBurn] = useState(false);
+
   const [isDark, setIsDark] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
@@ -277,17 +290,20 @@ export default function Home() {
   }, [share]);
 
   /* upload */
-  const startUpload = useCallback((list: File[]) => {
-    const arr = Array.from(list).filter((f) => f.size > 0);
-    if (arr.length === 0) return;
-    setPending(arr);
-    setUploading(true);
-    setProgress(0);
-    setError(null);
-    setShare(null);
+  const startUpload = useCallback(
+    (list: File[]) => {
+      const arr = Array.from(list).filter((f) => f.size > 0);
+      if (arr.length === 0) return;
+      setPending(arr);
+      setUploading(true);
+      setProgress(0);
+      setError(null);
+      setShare(null);
 
-    const fd = new FormData();
-    arr.forEach((f) => fd.append("files", f));
+      const fd = new FormData();
+      arr.forEach((f) => fd.append("files", f));
+      fd.append("expiresIn", String(ttl));
+      if (burn) fd.append("burn", "true");
 
     const xhr = new XMLHttpRequest();
     xhrRef.current = xhr;
@@ -321,7 +337,9 @@ export default function Home() {
       setUploading(false);
     };
     xhr.send(fd);
-  }, []);
+    },
+    [ttl, burn]
+  );
 
   const resetAll = useCallback(() => {
     try {
@@ -434,6 +452,12 @@ export default function Home() {
           >
             Receive
           </a>
+          <a
+            href="/direct"
+            className="hidden font-mono text-[12px] text-zinc-400 transition-colors duration-150 hover:text-zinc-900 sm:inline dark:hover:text-zinc-100"
+          >
+            Direct
+          </a>
           <span className="hidden h-4 w-px bg-zinc-200 sm:block dark:bg-zinc-800" />
           <span className="flex items-center gap-1.5 font-mono text-[11px] text-zinc-400">
             <span
@@ -503,8 +527,10 @@ export default function Home() {
             minutes.
           </p>
 
-          {/* mode switch */}
-          <div className="mt-8 inline-flex items-center rounded-full border border-zinc-200 bg-white/70 p-1 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/70">
+          {/* mode switch (offline parked — see OFFLINE_MODE_ENABLED) */}
+          {OFFLINE_MODE_ENABLED && (
+            <>
+              <div className="mt-8 inline-flex items-center rounded-full border border-zinc-200 bg-white/70 p-1 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/70">
             <button
               onClick={() => setMode("online")}
               className={`rounded-full px-5 py-1.5 text-[13px] font-medium transition-all duration-150 ${
@@ -534,6 +560,8 @@ export default function Home() {
               ? "via server · works anywhere · 30 min expiry"
               : "direct Wi-Fi · no internet needed · same network"}
           </p>
+            </>
+          )}
         </div>
 
         {/* backend-not-configured notice (live deployments) */}
@@ -579,8 +607,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* offline LAN panel */}
-        {mode === "local" && (
+        {/* offline LAN panel (parked — see OFFLINE_MODE_ENABLED) */}
+        {OFFLINE_MODE_ENABLED && mode === "local" && (
           <div className="rise mx-auto mt-10 w-full max-w-xl rounded-xl border border-zinc-200 bg-white/80 p-6 text-left backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/80">
             <div className="flex items-baseline justify-between">
               <p className="font-grotesk text-[15px] font-bold tracking-tight">
@@ -637,6 +665,61 @@ export default function Home() {
           </div>
         )}
 
+        {/* share options — expiry + burn, chosen before upload */}
+        {!share && pending.length === 0 && !uploading && (
+          <div className="rise mx-auto mt-10 flex w-full max-w-xl flex-wrap items-center justify-center gap-x-6 gap-y-3">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-zinc-400">
+                Expires
+              </span>
+              <div className="flex items-center rounded-full border border-zinc-200 p-0.5 dark:border-zinc-800">
+                {[
+                  { label: "10m", value: 10 },
+                  { label: "30m", value: 30 },
+                  { label: "1h", value: 60 },
+                  { label: "24h", value: 1440 },
+                ].map((o) => (
+                  <button
+                    key={o.value}
+                    onClick={() => setTtl(o.value)}
+                    className={`rounded-full px-3 py-1 font-mono text-[11px] transition-all duration-150 ${
+                      ttl === o.value
+                        ? "bg-zinc-950 text-white dark:bg-white dark:text-black"
+                        : "text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100"
+                    }`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-zinc-400">
+                Burn after reading
+              </span>
+              <button
+                role="switch"
+                aria-checked={burn}
+                aria-label="Burn after reading"
+                onClick={() => setBurn((b) => !b)}
+                className={`relative h-5 w-9 rounded-full border transition-colors duration-150 ${
+                  burn
+                    ? "border-zinc-950 bg-zinc-950 dark:border-zinc-100 dark:bg-zinc-100"
+                    : "border-zinc-300 bg-transparent dark:border-zinc-700"
+                }`}
+              >
+                <span
+                  className={`absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full transition-all duration-150 ${
+                    burn
+                      ? "left-[18px] bg-white dark:bg-black"
+                      : "left-[3px] bg-zinc-400 dark:bg-zinc-600"
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* workspace */}
         <div id="share" className="mt-10 scroll-mt-8">
           {share ? (
@@ -653,6 +736,11 @@ export default function Home() {
                   {countdown}
                 </span>
               </p>
+              {share.burn && (
+                <p className="mx-auto mt-3 w-fit rounded-full border border-zinc-950 px-3 py-1 font-mono text-[11px] text-zinc-900 dark:border-zinc-100 dark:text-zinc-100">
+                  self-destructs after first download
+                </p>
+              )}
 
               {mode === "local" && lanLink ? (
                 <div className="mx-auto mt-8 max-w-xl">
@@ -966,6 +1054,7 @@ export default function Home() {
                     {recvMeta.files.length} file
                     {recvMeta.files.length > 1 ? "s" : ""} · expires{" "}
                     {new Date(recvMeta.expiresAt).toLocaleTimeString()}
+                    {recvMeta.burn ? " · self-destructs on download" : ""}
                   </p>
                 </div>
                 <a

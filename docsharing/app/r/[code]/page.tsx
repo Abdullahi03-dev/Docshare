@@ -17,6 +17,8 @@ function getApiBase() {
 
 type ShareMeta = {
   code: string;
+  burn: boolean;
+  ttlMinutes: number;
   files: {
     originalName: string;
     storedName: string;
@@ -160,6 +162,11 @@ export default function RPage({
               {formatBytes(meta.files.reduce((n, f) => n + f.size, 0))} ·
               expires {new Date(meta.expiresAt).toLocaleTimeString()}
             </p>
+            {meta.burn && (
+              <p className="mx-auto mt-3 w-fit rounded-full border border-zinc-950 px-3 py-1 font-mono text-[11px] text-zinc-900 dark:border-zinc-100 dark:text-zinc-100">
+                self-destructs after first download — whole share
+              </p>
+            )}
 
             <a
               href={`${API}/share/${code}/download`}

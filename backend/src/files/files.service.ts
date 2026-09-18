@@ -17,14 +17,26 @@ export interface ShareSession {
   files: StoredFile[];
   expiresAt: Date;
   timer: NodeJS.Timeout;
+  /** chosen TTL in minutes (whitelisted) */
+  ttlMinutes: number;
+  /** burn-after-reading: whole session is deleted after first completed download */
+  burn: boolean;
 }
+
+export interface CreateSessionOptions {
+  ttlMinutes?: number;
+  burn?: boolean;
+}
+
+/** Allowed share lifetimes in minutes. Anything else falls back to default. */
+export const ALLOWED_TTLS = [10, 30, 60, 1440];
+export const DEFAULT_TTL = 30;
 
 @Injectable()
 export class FilesService implements OnModuleDestroy {
   private uploadDir = path.join(process.cwd(), 'uploads');
   private sessions = new Map<string, ShareSession>();
   private sweepInterval: NodeJS.Timeout;
-  private readonly EXPIRY_MS = 30 * 60 * 1000; // 30 min
   private readonly SWEEP_MS = 60 * 1000; // 60s
 
   constructor() {
@@ -55,7 +67,10 @@ export class FilesService implements OnModuleDestroy {
     return code;
   }
 
-  createSession(files: Express.Multer.File[]): { code: string; session: ShareSession } {
+  createSession(
+    files: Express.Multer.File[],
+    opts: CreateSessionOptions = {},
+  ): { code: string; session: ShareSession } {
     const code = this.generateCode();
     const storedFiles: StoredFile[] = files.map((f) => ({
       id: f.filename.split('.')[0],
@@ -67,11 +82,24 @@ export class FilesService implements OnModuleDestroy {
       uploadedAt: new Date().toISOString(),
     }));
 
-    const expiresAt = new Date(Date.now() + this.EXPIRY_MS);
-    const timer = setTimeout(() => this.cleanup(code), this.EXPIRY_MS);
+    const ttlMinutes = ALLOWED_TTLS.includes(Number(opts.ttlMinutes))
+      ? Number(opts.ttlMinutes)
+      : DEFAULT_TTL;
+    const expiryMs = ttlMinutes * 60 * 1000;
+    const burn = opts.burn === true;
+
+    const expiresAt = new Date(Date.now() + expiryMs);
+    const timer = setTimeout(() => this.cleanup(code), expiryMs);
     if (timer.unref) timer.unref();
 
-    const session: ShareSession = { code, files: storedFiles, expiresAt, timer };
+    const session: ShareSession = {
+      code,
+      files: storedFiles,
+      expiresAt,
+      timer,
+      ttlMinutes,
+      burn,
+    };
     this.sessions.set(code, session);
     return { code, session };
   }
@@ -85,6 +113,8 @@ export class FilesService implements OnModuleDestroy {
       code: s.code,
       files: s.files,
       expiresAt: s.expiresAt,
+      ttlMinutes: s.ttlMinutes,
+      burn: s.burn,
     }));
   }
 
