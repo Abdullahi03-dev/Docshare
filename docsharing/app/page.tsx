@@ -1,7 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { QRCodeSVG } from "qrcode.react";
+import dynamic from "next/dynamic";
+
+// Split the QR renderer into its own chunk — only downloaded if the
+// (currently parked) offline mode ever renders it.
+const QRCodeSVG = dynamic(
+  () => import("qrcode.react").then((m) => m.QRCodeSVG),
+  { ssr: false }
+);
 
 /* ---------------------------------- utils --------------------------------- */
 
@@ -284,7 +291,8 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    fetchNetworkInfo();
+    // Parked with offline mode — no point hitting the backend for LAN IPs.
+    if (OFFLINE_MODE_ENABLED) fetchNetworkInfo();
   }, [fetchNetworkInfo]);
 
   /* countdown */
@@ -571,6 +579,46 @@ export default function Home() {
             Drop a file, get a link. No accounts, no clutter — gone in 30
             minutes.
           </p>
+
+          {/* ways to share — obvious on landing, before any upload */}
+          <div className="mx-auto mt-7 flex w-full max-w-xl flex-wrap items-stretch justify-center gap-2">
+            <div className="flex min-w-[150px] flex-1 items-center gap-3 rounded-xl border border-zinc-200 bg-white/70 px-4 py-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/70">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-950 text-white dark:bg-white dark:text-black">
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden>
+                  <path d="M6 8a3 3 0 0 0 4.2 0l1.6-1.6a3 3 0 0 0-4.2-4.2L6.8 3.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                  <path d="M8 6a3 3 0 0 0-4.2 0L2.2 7.6a3 3 0 0 0 4.2 4.2l1-1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+                </svg>
+              </span>
+              <span className="text-left">
+                <span className="block text-[13px] font-semibold tracking-[-0.01em]">Copy link</span>
+                <span className="block text-xs text-zinc-500 dark:text-zinc-400">paste it anywhere</span>
+              </span>
+            </div>
+            <a
+              href="#receive"
+              className="flex min-w-[150px] flex-1 items-center gap-3 rounded-xl border border-zinc-200 bg-white/70 px-4 py-3 backdrop-blur transition-colors duration-150 hover:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-950/70 dark:hover:border-zinc-600"
+            >
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-950 font-mono text-[11px] font-bold text-white dark:bg-white dark:text-black">
+                #
+              </span>
+              <span className="text-left">
+                <span className="block text-[13px] font-semibold tracking-[-0.01em]">4-digit code</span>
+                <span className="block text-xs text-zinc-500 dark:text-zinc-400">they type it in below</span>
+              </span>
+            </a>
+            <div className="flex min-w-[150px] flex-1 items-center gap-3 rounded-xl border border-zinc-200 bg-white/70 px-4 py-3 backdrop-blur dark:border-zinc-800 dark:bg-zinc-950/70">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-zinc-950 text-white dark:bg-white dark:text-black">
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden>
+                  <rect x="1.5" y="3" width="11" height="8.5" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+                  <path d="m2.5 4.5 4.5 3.5 4.5-3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+              <span className="text-left">
+                <span className="block text-[13px] font-semibold tracking-[-0.01em]">Email it</span>
+                <span className="block text-xs text-zinc-500 dark:text-zinc-400">straight to their inbox</span>
+              </span>
+            </div>
+          </div>
 
           {/* mode switch (offline parked — see OFFLINE_MODE_ENABLED) */}
           {OFFLINE_MODE_ENABLED && (
